@@ -148,7 +148,8 @@ handle_rewrite_req(#httpd{
                                     QueryList1) of
                 no_dispatch_path ->
                     throw(not_found);
-                {NewPathParts, Bindings} ->
+                {NewPathParts, Bindings, Replacements} ->
+
                     Parts = [quote_plus(X) || X <- NewPathParts],
 
                     % build new path, reencode query args, eventually convert
@@ -159,11 +160,19 @@ handle_rewrite_req(#httpd{
                             [] -> [];
                             _ -> [$?, encode_query(Bindings)]
                         end),
-                    
+
+                    % replace some characters of the result
+                    Path2 = case Replacements of
+                        {} ->
+                            Path;
+                        {Old, New, Limit} ->
+                            replace_escaped(Path, Old, New, Limit)
+                    end,
+
                     % if path is relative detect it and rewrite path
-                    case mochiweb_util:safe_relative_path(Path) of
+                    case mochiweb_util:safe_relative_path(Path2) of
                         undefined ->
-                            ?b2l(Prefix) ++ "/" ++ Path;
+                            ?b2l(Prefix) ++ "/" ++ Path2;
                         P1 ->
                             ?b2l(Prefix) ++ "/" ++ P1
                     end
@@ -205,7 +214,7 @@ quote_plus(X) ->
 try_bind_path([], _Method, _PathParts, _QueryList) ->
     no_dispatch_path;
 try_bind_path([Dispatch|Rest], Method, PathParts, QueryList) ->
-    [{PathParts1, Method1}, RedirectPath, QueryArgs] = Dispatch,
+    [{PathParts1, Method1}, RedirectPath, QueryArgs, Replacements] = Dispatch,
     case bind_method(Method1, Method) of
         true ->
             case bind_path(PathParts1, PathParts, []) of
@@ -228,7 +237,7 @@ try_bind_path([Dispatch|Rest], Method, PathParts, QueryList) ->
                     FinalBindings = Bindings2 ++ QueryArgs1,
                     NewPathParts = make_new_path(RedirectPath, FinalBindings,
                                     Remaining, []),
-                    {NewPathParts, FinalBindings};
+                    {NewPathParts, FinalBindings, Replacements};
                 fail ->
                     try_bind_path(Rest, Method, PathParts, QueryList)
             end;
@@ -394,7 +403,16 @@ make_rule(Rule) ->
         To ->
             parse_path(To)
         end,
-    [{FromParts, Method}, ToParts, QueryArgs].
+    Replacements = case couch_util:get_value(<<"replace">>, Rule) of
+        undefined -> {};
+        %[Match, Repl] -> [Match, Repl]
+        {Replace} ->
+            Old = couch_util:get_value(<<"old">>, Replace),
+            New = couch_util:get_value(<<"new">>, Replace),
+            Limit = couch_util:get_value(<<"limit">>, Replace),
+            {Old, New, Limit}
+        end,
+    [{FromParts, Method}, ToParts, QueryArgs, Replacements].
 
 parse_path(Path) ->
     {ok, SlashRE} = re:compile(<<"\\/">>),
@@ -462,3 +480,89 @@ to_binding(V) ->
 
 to_json(V) ->
     iolist_to_binary(?JSON_ENCODE(V)).
+
+% couch_httpd_rewrite_vmx:substr_count("thisisatest", "i").
+substr_count(String, Substr) ->
+    substr_count(String, Substr, Substr, 0).
+% Done with the string, last character made the match
+substr_count([], _Substr, [], Count) ->
+    Count+1;
+% Done with the string
+substr_count([], _Substr, _, Count) ->
+    Count;
+% Current character of the string and substring match, go on with next
+substr_count([Char|CharRest], Substr, [Sub|SubRest], Count) when Char =:= Sub ->
+    substr_count(CharRest, Substr, SubRest, Count);
+% Subtring matched fully, let's see if we find another one
+substr_count(String, Substr, [], Count) ->
+    substr_count(String, Substr, Substr, Count+1);
+% Current character of the string and substring don't match, but the character
+% of the string might match the first one of the original substring
+substr_count([Char|CharRest], [Sub|SubRest]=Substr, _, Count) when Char =:= Sub ->
+    substr_count(CharRest, Substr, SubRest, Count);
+% Current character of the string and substring don't match, start over
+substr_count([_Char|CharRest], Substr, _, Count) ->
+    substr_count(CharRest, Substr, Substr, Count).
+
+
+% Replace without a limit
+replace_escaped(Subject, Match, Replacement, undefined) ->
+    % First split the Subject at the escaped tokens (backslashes are URL
+    % encoded)
+    Escaped = re:split(Subject, "%5C" ++ Match, [{return,list}]),
+    replace_escaped_nolimit(Escaped, ?b2l(Match), ?b2l(Replacement), []);
+% Replace with a certain limit
+replace_escaped(Subject, Match, Replacement, Limit) when Limit >= 0 ->
+    % First split the Subject at the escaped tokens (backslashes are URL
+    % encoded)
+    Escaped = re:split(Subject, "%5C" ++ Match, [{return,list}]),
+    replace_escaped_limit(
+            Escaped, ?b2l(Match), ?b2l(Replacement), Limit+1, []);
+% Negative limits mean that at so many matches (counted from the back) are
+% not splited. This is useful when you e.g. know how many slashed attachments
+% have, but not how many the documents have.
+replace_escaped(Subject, Match, Replacement, Limit) when Limit < 0 ->
+    % Count the occurences (including the escaped ones)
+    Num = substr_count(Subject, ?b2l(Match)),
+    % Split the Subject at the escaped tokens (backslashes are URL encoded)
+    Escaped = re:split(Subject, "%5C" ++ Match, [{return,list}]),
+    % Calculate the positive limit (-1 as lenth(Escaped) is the number of
+    % partitions and not the number of occurences)
+    Limit2 = (Num - (length(Escaped) - 1)) + Limit,
+    case Limit2 =< 0 of
+        % Negative was bigger than the actual occurences
+        true ->
+            replace_escaped_nolimit(
+                    Escaped, ?b2l(Match), ?b2l(Replacement), []);
+        false ->
+            replace_escaped_limit(
+                    Escaped, ?b2l(Match), ?b2l(Replacement), Limit2+1, [])
+    end.
+
+
+replace_escaped_nolimit([], Match, _Replacement, Acc) ->
+    % Join the originally escaped parts again
+    string:join(lists:reverse(Acc), Match);
+replace_escaped_nolimit([Subject|Rest], Match, Replacement, Acc) ->
+    % Split every part at the actual Match
+    %Replaced = string:join(string:tokens(Subject, Match), Replacement),
+    % string:tokens/2 doesn't work here, as we may split with multiple
+    % characters
+    Replaced = string:join(
+            re:split(Subject, Match, [{return,list}]), Replacement),
+    replace_escaped_nolimit(Rest, Match, Replacement, [Replaced|Acc]).
+
+
+replace_escaped_limit([], Match, _Replacement, _SplitLimit, Acc) ->
+    % Join the originally escaped parts again
+    string:join(lists:reverse(Acc), Match);
+replace_escaped_limit([Subject|Rest], Match, Replacement, SplitLimit, Acc) ->
+    % Split every part at the actual Match
+    Splitted = re:split(Subject, Match, [{parts, SplitLimit}, {return,list}]),
+    % There might be less elements that the limit (as we split at the escaped
+    % characters beforehand)
+    % -1 as a split with e.g. 2 elements means that it was splitted once
+    Num = length(Splitted) - 1,
+    Replaced = string:join(Splitted, Replacement),
+    replace_escaped_limit(
+            Rest, Match, Replacement, SplitLimit-Num, [Replaced|Acc]).
