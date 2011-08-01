@@ -21,6 +21,14 @@ function loadTest(file) {
 loadTest("basics.js");
 
 // keep sorted
+loadTest("spatial.js");
+loadTest("list_spatial.js");
+loadTest("etags_spatial.js");
+loadTest("multiple_spatial_rows.js");
+loadTest("spatial_compaction.js");
+loadTest("spatial_design_docs.js");
+loadTest("spatial_bugfixes.js");
+
 loadTest("all_docs.js");
 loadTest("attachments.js");
 loadTest("attachments_multipart.js");

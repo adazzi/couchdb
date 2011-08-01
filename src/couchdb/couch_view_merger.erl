@@ -14,6 +14,10 @@
 
 -export([query_view/2]).
 
+% Only needed for GeoCouch
+-export([collector_loop/4, dec_counter/1, get_first_ddoc/3, http_view_fold/3,
+    make_map_fold_fun/4, open_db/3, stop_conn/1, stream_all/2, stream_data/1]).
+
 -include("couch_db.hrl").
 -include("couch_view_merger.hrl").
 
