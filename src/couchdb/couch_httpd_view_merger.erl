@@ -15,6 +15,7 @@
 -export([handle_req/1, apply_http_config/3]).
 
 -include("couch_db.hrl").
+-include("couch_merger.hrl").
 -include("couch_view_merger.hrl").
 -include("../ibrowse/ibrowse.hrl").
 
@@ -37,9 +38,9 @@
 
 
 setup_http_sender(MergeParams, Req) ->
-    MergeParams#view_merge{
+    MergeParams#index_merge{
         user_acc = #sender_acc{
-            req = Req, on_error = MergeParams#view_merge.on_error
+            req = Req, on_error = MergeParams#index_merge.on_error
         },
         callback = fun http_sender/2
     }.
@@ -50,14 +51,17 @@ handle_req(#httpd{method = 'GET'} = Req) ->
     RedFun = validate_reredfun_param(qs_json_value(Req, <<"rereduce">>, nil)),
     RedFunLang = validate_lang_param(
         qs_json_value(Req, <<"language">>, <<"javascript">>)),
-    MergeParams0 = #view_merge{
-        views = Views,
+    ViewMergeParams = #view_merge{
         keys = Keys,
         rereduce_fun = RedFun,
         rereduce_fun_lang = RedFunLang
     },
+    MergeParams0 = #index_merge{
+        indexes = Views,
+        extra = ViewMergeParams
+    },
     MergeParams1 = apply_http_config(Req, [], MergeParams0),
-    couch_view_merger:query_view(Req, MergeParams1);
+    couch_merger:query_index(couch_view_merger, Req, MergeParams1);
 
 handle_req(#httpd{method = 'POST'} = Req) ->
     couch_httpd:validate_ctype(Req, "application/json"),
@@ -67,21 +71,24 @@ handle_req(#httpd{method = 'POST'} = Req) ->
     RedFun = validate_reredfun_param(get_value(<<"rereduce">>, Props, nil)),
     RedFunLang = validate_lang_param(
         get_value(<<"language">>, Props, <<"javascript">>)),
-    MergeParams0 = #view_merge{
-        views = Views,
+    ViewMergeParams = #view_merge{
         keys = Keys,
         rereduce_fun = RedFun,
         rereduce_fun_lang = RedFunLang
     },
+    MergeParams0 = #index_merge{
+        indexes = Views,
+        extra = ViewMergeParams
+    },
     MergeParams1 = apply_http_config(Req, Props, MergeParams0),
-    couch_view_merger:query_view(Req, MergeParams1);
+    couch_merger:query_index(couch_view_merger, Req, MergeParams1);
 
 handle_req(Req) ->
     couch_httpd:send_method_not_allowed(Req, "GET,POST").
 
 
 apply_http_config(Req, Body, MergeParams) ->
-    DefConnTimeout = MergeParams#view_merge.conn_timeout,
+    DefConnTimeout = MergeParams#index_merge.conn_timeout,
     ConnTimeout = case get_value(<<"connection_timeout">>, Body, nil) of
     nil ->
         qs_json_value(Req, "connection_timeout", DefConnTimeout);
@@ -94,7 +101,7 @@ apply_http_config(Req, Body, MergeParams) ->
     Policy when is_binary(Policy) ->
        Policy
     end,
-    setup_http_sender(MergeParams#view_merge{
+    setup_http_sender(MergeParams#index_merge{
         conn_timeout = ConnTimeout,
         on_error = validate_on_error_param(OnError)
     }, Req).

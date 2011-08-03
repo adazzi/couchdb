@@ -28,6 +28,7 @@ loadTest("multiple_spatial_rows.js");
 loadTest("spatial_compaction.js");
 loadTest("spatial_design_docs.js");
 loadTest("spatial_bugfixes.js");
+loadTest("spatial_merging.js");
 
 loadTest("all_docs.js");
 loadTest("attachments.js");
