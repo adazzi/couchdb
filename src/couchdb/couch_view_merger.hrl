@@ -10,27 +10,22 @@
 % License for the specific language governing permissions and limitations under
 % the License.
 
--record(simple_view_spec, {
-    database,
-    ddoc_database = nil, % Couchbase specific
-    ddoc_id,
-    view_name
-}).
+%-record(simple_view_spec, {
+%    database,
+%    ddoc_database = nil, % Couchbase specific
+%    ddoc_id,
+%    view_name
+%}).
+%
+%% It's always remote.
+%-record(merged_view_spec, {
+%    url,
+%    ejson_spec
+%}).
 
-% It's always remote.
--record(merged_view_spec, {
-    url,
-    ejson_spec
-}).
 
 -record(view_merge, {
-   views = [],   % [ #simple_view_spec{} | #merged_view_spec{} ]
-   keys = nil,
-   rereduce_fun = nil,
-   rereduce_fun_lang = <<"javascript">>,
-   callback,
-   user_acc,
-   % parameters that matter only when there are remote views to merge
-   conn_timeout = 60000,    % milliseconds
-   on_error = continue      % 'continue' | 'stop'
+    keys = nil,
+    rereduce_fun = nil,
+    rereduce_fun_lang = <<"javascript">>
 }).
