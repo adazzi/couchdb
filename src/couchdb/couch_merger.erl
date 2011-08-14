@@ -37,11 +37,13 @@ query_index(Mod, #httpd{user_ctx = UserCtx} = Req, IndexMergeParams) ->
        indexes = Indexes, callback = Callback, user_acc = UserAcc,
        conn_timeout = Timeout, extra = Extra
     } = IndexMergeParams,
+?LOG_DEBUG("query_index: indexes~n~p", [Indexes]),
     {ok, DDoc, IndexName} = get_first_ddoc(Indexes, UserCtx, Timeout),
     IndexArgs = Mod:parse_http_params(Req, DDoc, IndexName, Extra),
     {LessFun, FoldFun, MergeFun, CollectorFun, Extra2} = Mod:make_funs(
         Req, DDoc, IndexName, IndexArgs, IndexMergeParams),
     NumFolders = length(Indexes),
+?LOG_DEBUG("query_index: numindexes: ~p", [NumFolders]),
     QueueLessFun = fun
         ({error, _Url, _Reason}, _) ->
             true;
@@ -63,8 +65,6 @@ query_index(Mod, #httpd{user_ctx = UserCtx} = Req, IndexMergeParams) ->
     end,
     {ok, Queue} = couch_view_merger_queue:start_link(NumFolders, QueueLessFun),
     Collector = spawn_link(fun() ->
-        % Spatial indexes are quite similar to map function, hence use the
-        % collector loop from the map function
         CollectorFun(NumFolders, Callback, UserAcc)
     end),
     Folders = lists:foldr(
@@ -220,22 +220,28 @@ ibrowse_options(#httpdb{timeout = T, url = Url}) ->
 
 collect_row_count(RecvCount, AccCount, PreprocessFun, Callback, UserAcc) ->
     receive
-    {{error, _DbUrl, _Reason} = Error, From} ->
+    {{error, DbUrl, _Reason} = Error, From} ->
+?LOG_DEBUG("couch_merger: collect_row_count, error: ~p", [DbUrl]),
         case Callback(Error, UserAcc) of
         {stop, Resp} ->
+?LOG_DEBUG("couch_merger: collect_row_count, error, stop", []),
             From ! {stop, Resp, self()};
         {ok, UserAcc2} ->
+?LOG_DEBUG("couch_merger: collect_row_count, error, continue", []),
             From ! {continue, self()},
             case RecvCount > 1 of
             false ->
+?LOG_DEBUG("couch_merger: collect_row_count, error, continue, false", []),
                 {ok, UserAcc3} = Callback({start, AccCount}, UserAcc2),
                 collect_rows(PreprocessFun, Callback, UserAcc3);
             true ->
+?LOG_DEBUG("couch_merger: collect_row_count, error, continue, true: ~p", [RecvCount]),
                 collect_row_count(
                     RecvCount - 1, AccCount, PreprocessFun, Callback, UserAcc2)
             end
         end;
     {row_count, Count} ->
+?LOG_DEBUG("couch_merger: collect_row_count, row_count", []),
         AccCount2 = AccCount + Count,
         case RecvCount > 1 of
         false ->
@@ -256,6 +262,7 @@ collect_row_count(RecvCount, AccCount, PreprocessFun, Callback, UserAcc) ->
 collect_rows(PreprocessFun, Callback, UserAcc) ->
     receive
     {{error, _DbUrl, _Reason} = Error, From} ->
+?LOG_DEBUG("couch_merger: collect_rows, error", []),
         case Callback(Error, UserAcc) of
         {stop, Resp} ->
             From ! {stop, Resp, self()};
@@ -264,10 +271,12 @@ collect_rows(PreprocessFun, Callback, UserAcc) ->
             collect_rows(PreprocessFun, Callback, UserAcc2)
         end;
     {row, Row} ->
+?LOG_DEBUG("couch_merger: collect_rows, row", []),
         RowEJson = PreprocessFun(Row),
         {ok, UserAcc2} = Callback({row, RowEJson}, UserAcc),
         collect_rows(PreprocessFun, Callback, UserAcc2);
     {stop, From} ->
+?LOG_DEBUG("couch_merger: collect_rows, stop", []),
         {ok, UserAcc2} = Callback(stop, UserAcc),
         From ! {UserAcc2, self()}
     end.
@@ -342,6 +351,7 @@ http_index_folder(Mod, ViewSpec, MergeParams, ViewArgs, Queue, EventFun) ->
         [{stream_to, {self(), once}} | Options]),
     receive
     {ibrowse_async_headers, ReqId, "200", _RespHeaders} ->
+?LOG_DEBUG("http_index_folder, 200", []),
         ibrowse:stream_next(ReqId),
         DataFun = fun() -> stream_data(ReqId) end,
         try
@@ -350,6 +360,7 @@ http_index_folder(Mod, ViewSpec, MergeParams, ViewArgs, Queue, EventFun) ->
             ok = couch_view_merger_queue:queue(Queue, {error, Url, Error})
         after
             stop_conn(Conn),
+?LOG_DEBUG("http_index_folder done: ~p", [Url]),
             ok = couch_view_merger_queue:done(Queue)
         end;
     {ibrowse_async_headers, ReqId, Code, _RespHeaders} ->

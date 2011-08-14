@@ -140,10 +140,12 @@ http_sender(stop, #sender_acc{resp = Resp, error_acc = ErrorAcc}) ->
     {ok, couch_httpd:end_json_response(Resp)};
 
 http_sender({error, Url, Reason}, #sender_acc{on_error = continue, error_acc = ErrorAcc} = SAcc) ->
+?LOG_DEBUG("the bug might be here somewhere", []),
     Row = {[
         {<<"from">>, rem_passwd(Url)}, {<<"reason">>, to_binary(Reason)}
     ]},
     ErrorAcc2 = [?JSON_ENCODE(Row) | ErrorAcc],
+?LOG_DEBUG("the bug might be here somewhere 2", []),
     {ok, SAcc#sender_acc{error_acc = ErrorAcc2}};
 
 http_sender({error, Url, Reason}, #sender_acc{on_error = stop} = SAcc) ->
