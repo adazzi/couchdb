@@ -674,21 +674,12 @@ reduce_view_folder(Db, ViewSpec, MergeParams, ViewArgs, Queue) ->
     catch couch_db:close(DDocDb).
 
 get_reduce_view(Db, DDocDbName, DDocId, ViewName, Stale) ->
-    GroupId = case DDocDbName of
-    nil ->
-        DDocDb = nil,
-        DDocId;
-    _ when is_binary(DDocDbName) ->
-        DDocDb = case couch_db:open_int(DDocDbName, []) of
-        {ok, DDocDb1} ->
-            DDocDb1;
-        {not_found, _} ->
-            throw(ddoc_db_not_found)
-        end,
-        {DDocDb, DDocId}
-    end,
+    GroupId = couch_merger:get_group_id(DDocDbName, DDocId),
     {ok, View, _} = couch_view:get_reduce_view(Db, GroupId, ViewName, Stale),
-    {DDocDb, View}.
+    case GroupId of
+        {DDocDb, DDocId} -> {DDocDb, View};
+        DDocId -> {nil, View}
+    end.
 
 
 make_group_rows_fun(#view_query_args{group_level = 0}) ->
@@ -728,19 +719,7 @@ make_reduce_fold_fun(_QueryArgs, Queue) ->
 
 
 get_map_view(Db, DDocDbName, DDocId, ViewName, Stale) ->
-    GroupId = case DDocDbName of
-    nil ->
-        DDocDb = nil,
-        DDocId;
-    _ when is_binary(DDocDbName) ->
-        DDocDb = case couch_db:open_int(DDocDbName, []) of
-        {ok, DDocDb1} ->
-            DDocDb1;
-        {not_found, _} ->
-            throw(ddoc_db_not_found)
-        end,
-        {DDocDb, DDocId}
-    end,
+    GroupId = couch_merger:get_group_id(DDocDbName, DDocId),
     View = case couch_view:get_map_view(Db, GroupId, ViewName, Stale) of
     {ok, MapView, _} ->
         MapView;
@@ -748,7 +727,10 @@ get_map_view(Db, DDocDbName, DDocId, ViewName, Stale) ->
         {ok, RedView, _} = couch_view:get_reduce_view(Db, GroupId, ViewName, Stale),
         couch_view:extract_map_view(RedView)
     end,
-    {DDocDb, View}.
+    case GroupId of
+        {DDocDb, DDocId} -> {DDocDb, View};
+        DDocId -> {nil, View}
+    end.
 
 
 make_map_fold_fun(false, _Conflicts, _Db, Queue) ->

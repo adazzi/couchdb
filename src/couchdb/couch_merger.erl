@@ -16,10 +16,10 @@
 
 % only needed for couch_view_merger. Those functions should perhaps go into
 % a utils module
-% open_db/3 is also needed by this file
+% open_db/3, dec_counter/1 is also needed by this file
 -export([open_db/3, collect_rows/3,
     merge_indexes_no_acc/2, merge_indexes_no_limit/1, handle_skip/1,
-    dec_counter/1]).
+    dec_counter/1, get_group_id/2]).
 
 -include("couch_db.hrl").
 -include("couch_merger.hrl").
@@ -188,6 +188,20 @@ get_ddoc(Db, Id) ->
     {not_found, _} ->
         throw({not_found, ddoc_not_found_msg(Db, Id)})
     end.
+
+% Returns the group ID of the indexer group that contains the Design Document
+% In Couchbase the Design Document is stored in a so-called master database.
+% This is Couchbase specific
+get_group_id(nil, DDocId) ->
+    DDocId;
+get_group_id(DDocDbName, DDocId) when is_binary(DDocDbName) ->
+    DDocDb = case couch_db:open_int(DDocDbName, []) of
+    {ok, DDocDb1} ->
+        DDocDb1;
+    {not_found, _} ->
+        throw(ddoc_db_not_found)
+    end,
+    {DDocDb, DDocId}.
 
 db_uri(#httpdb{url = Url}) ->
     db_uri(Url);
