@@ -19,7 +19,7 @@
 % open_db/3 is also needed by this file
 -export([open_db/3, collect_row_count/5, collect_rows/3,
     merge_indexes_no_acc/2, merge_indexes_no_limit/1, handle_skip/1,
-    dec_counter/1, http_index_folder/6]).
+    dec_counter/1]).
 
 -include("couch_db.hrl").
 -include("couch_merger.hrl").
@@ -31,6 +31,7 @@
     get_nested_json_value/2
 ]).
 
+-define(LOCAL, <<"local">>).
 
 query_index(Mod, #httpd{user_ctx = UserCtx} = Req, IndexMergeParams) ->
     #index_merge{
@@ -68,7 +69,9 @@ query_index(Mod, #httpd{user_ctx = UserCtx} = Req, IndexMergeParams) ->
     Folders = lists:foldr(
         fun(Index, Acc) ->
             Pid = spawn_link(fun() ->
-                FoldFun(Index, IndexMergeParams, UserCtx, IndexArgs, Queue)
+                index_folder(Mod, Index, IndexMergeParams, UserCtx, IndexArgs,
+                    Queue, FoldFun)
+                %FoldFun(Index, IndexMergeParams, UserCtx, IndexArgs, Queue)
             end),
             [Pid | Acc]
         end,
@@ -330,10 +333,57 @@ dec_counter(0) -> 0;
 dec_counter(N) -> N - 1.
 
 
+index_folder(Mod, #simple_view_spec{database = <<"http://", _/binary>>} =
+        IndexSpec, MergeParams, _UserCtx, IndexArgs, Queue, _FoldFun) ->
+    http_index_folder(Mod, IndexSpec, MergeParams, IndexArgs, Queue);
+
+index_folder(Mod, #simple_view_spec{database = <<"https://", _/binary>>} =
+        IndexSpec, MergeParams, _UserCtx, IndexArgs, Queue, _FoldFun) ->
+    http_index_folder(Mod, IndexSpec, MergeParams, IndexArgs, Queue);
+
+index_folder(Mod, #merged_view_spec{} = IndexSpec,
+        MergeParams, _UserCtx, IndexArgs, Queue, _FoldFun) ->
+    http_index_folder(Mod, IndexSpec, MergeParams, IndexArgs, Queue);
+
+index_folder(_Mod, IndexSpec, MergeParams, UserCtx, IndexArgs, Queue,
+        FoldFun) ->
+    #simple_view_spec{
+        database = DbName, ddoc_database = DDocDbName, ddoc_id = DDocId
+    } = IndexSpec,
+    case couch_db:open(DbName, [{user_ctx, UserCtx}]) of
+    {ok, Db} ->
+        try
+            FoldFun(Db, IndexSpec, MergeParams, IndexArgs, Queue)
+        catch
+        {not_found, Reason} when Reason =:= missing; Reason =:= deleted ->
+            ok = couch_view_merger_queue:queue(
+                Queue, {error, ?LOCAL, ddoc_not_found_msg(DbName, DDocId)});
+        ddoc_db_not_found ->
+            ok = couch_view_merger_queue:queue(
+                Queue, {error, ?LOCAL, ddoc_not_found_msg(DDocDbName, DDocId)});
+        _Tag:Error ->
+            couch_view_merger_queue:queue(Queue, parse_error(Error))
+        after
+            ok = couch_view_merger_queue:done(Queue),
+            couch_db:close(Db)
+        end;
+    {not_found, _} ->
+        ok = couch_view_merger_queue:queue(
+            Queue, {error, ?LOCAL, db_not_found_msg(DbName)}),
+        ok = couch_view_merger_queue:done(Queue)
+    end.
+
+% `invalid_value` only happens on reduces
+parse_error({invalid_value, Reason}) ->
+    {error, ?LOCAL, to_binary(Reason)};
+parse_error(Error) ->
+    {error, ?LOCAL, to_binary(Error)}.
+
 % Fold function for remote indexes
-http_index_folder(Mod, ViewSpec, MergeParams, ViewArgs, Queue, EventFun) ->
+http_index_folder(Mod, IndexSpec, MergeParams, IndexArgs, Queue) ->
+    EventFun = Mod:make_event_fun(IndexArgs, Queue),
     {Url, Method, Headers, Body, Options} = Mod:http_index_folder_req_details(
-        ViewSpec, MergeParams, ViewArgs),
+        IndexSpec, MergeParams, IndexArgs),
     {ok, Conn} = ibrowse:spawn_link_worker_process(Url),
     {ibrowse_req_id, ReqId} = ibrowse:send_req_direct(
         Conn, Url, Headers, Method, Body,
