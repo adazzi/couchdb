@@ -91,7 +91,7 @@ make_funs(Req, DDoc, ViewName, ViewArgs, IndexMergeParams) ->
      % red_map|map
      _ ->
         fun (NumFolders, Callback2, UserAcc2) ->
-            couch_merger:collect_row_count(
+            collect_row_count(
                 NumFolders, 0, fun view_row_obj_map/1, Callback2, UserAcc2)
         end
     end,
@@ -203,6 +203,37 @@ view_less_fun(Collation, Dir, ViewType) ->
         fun(A, B) -> not LessFun(A, B) end
     end.
 
+collect_row_count(RecvCount, AccCount, PreprocessFun, Callback, UserAcc) ->
+    receive
+    {{error, _DbUrl, _Reason} = Error, From} ->
+        case Callback(Error, UserAcc) of
+        {stop, Resp} ->
+            From ! {stop, Resp, self()};
+        {ok, UserAcc2} ->
+            From ! {continue, self()},
+            case RecvCount > 1 of
+            false ->
+                {ok, UserAcc3} = Callback({start, AccCount}, UserAcc2),
+                couch_merger:collect_rows(PreprocessFun, Callback, UserAcc3);
+            true ->
+                collect_row_count(
+                    RecvCount - 1, AccCount, PreprocessFun, Callback, UserAcc2)
+            end
+        end;
+    {row_count, Count} ->
+        AccCount2 = AccCount + Count,
+        case RecvCount > 1 of
+        false ->
+            % TODO: what about offset and update_seq?
+            % TODO: maybe add etag like for regular views? How to
+            %       compute them?
+            {ok, UserAcc2} = Callback({start, AccCount2}, UserAcc),
+            couch_merger:collect_rows(PreprocessFun, Callback, UserAcc2);
+        true ->
+            collect_row_count(
+                RecvCount - 1, AccCount2, PreprocessFun, Callback, UserAcc)
+        end
+    end.
 
 view_row_obj_map({{Key, error}, Value}) ->
     {[{key, Key}, {error, Value}]};

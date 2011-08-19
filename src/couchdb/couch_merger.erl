@@ -17,7 +17,7 @@
 % only needed for couch_view_merger. Those functions should perhaps go into
 % a utils module
 % open_db/3 is also needed by this file
--export([open_db/3, collect_row_count/5, collect_rows/3,
+-export([open_db/3, collect_rows/3,
     merge_indexes_no_acc/2, merge_indexes_no_limit/1, handle_skip/1,
     dec_counter/1]).
 
@@ -217,39 +217,6 @@ ibrowse_options(#httpdb{timeout = T, url = Url}) ->
         []
     end.
 
-
-
-collect_row_count(RecvCount, AccCount, PreprocessFun, Callback, UserAcc) ->
-    receive
-    {{error, _DbUrl, _Reason} = Error, From} ->
-        case Callback(Error, UserAcc) of
-        {stop, Resp} ->
-            From ! {stop, Resp, self()};
-        {ok, UserAcc2} ->
-            From ! {continue, self()},
-            case RecvCount > 1 of
-            false ->
-                {ok, UserAcc3} = Callback({start, AccCount}, UserAcc2),
-                collect_rows(PreprocessFun, Callback, UserAcc3);
-            true ->
-                collect_row_count(
-                    RecvCount - 1, AccCount, PreprocessFun, Callback, UserAcc2)
-            end
-        end;
-    {row_count, Count} ->
-        AccCount2 = AccCount + Count,
-        case RecvCount > 1 of
-        false ->
-            % TODO: what about offset and update_seq?
-            % TODO: maybe add etag like for regular views? How to
-            %       compute them?
-            {ok, UserAcc2} = Callback({start, AccCount2}, UserAcc),
-            collect_rows(PreprocessFun, Callback, UserAcc2);
-        true ->
-            collect_row_count(
-                RecvCount - 1, AccCount2, PreprocessFun, Callback, UserAcc)
-        end
-    end.
 
 % PreprocessFun is called on every row (which comes from the fold function
 % of the underlying data structure) before it gets passed into the Callback
